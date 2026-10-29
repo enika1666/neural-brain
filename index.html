@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Neural Brain</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #05070f; overflow: hidden;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #wrap { position: relative; width: 100%; height: 100%; }
+  #c { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+  #c:active { cursor: grabbing; }
+
+  .title { position: absolute; left: 20px; top: 18px; color: #cfd8ff; font-weight: 600;
+    font-size: 15px; letter-spacing: .14em; text-transform: uppercase; pointer-events: none; }
+
+  #labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  .lbl { position: absolute; transform: translate(-50%, -50%); pointer-events: auto; cursor: pointer;
+    font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; white-space: nowrap;
+    background: rgba(5, 7, 15, .65); border: 1px solid currentColor; user-select: none;
+    transition: opacity .25s, box-shadow .25s; }
+  .lbl.on { box-shadow: 0 0 14px currentColor; }
+
+  #legend { position: absolute; left: 16px; right: 16px; bottom: 16px; display: flex;
+    flex-wrap: wrap; gap: 8px; justify-content: center; }
+  .chip { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 999px;
+    border: 1px solid rgba(255,255,255,.15); background: rgba(255,255,255,.04); color: #dfe6ff;
+    font: inherit; font-size: 13px; cursor: pointer; transition: background .2s, border-color .2s; }
+  .chip .dot { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 8px currentColor; }
+  .chip.on { border-color: currentColor; background: rgba(255,255,255,.1); }
+
+  #info { position: absolute; right: 16px; top: 16px; max-width: 260px; padding: 14px 16px;
+    border-radius: 12px; background: rgba(10, 14, 30, .8); border: 1px solid rgba(255,255,255,.12);
+    color: #dfe6ff; font-size: 13px; line-height: 1.45; opacity: 0; transform: translateY(-6px);
+    transition: opacity .25s, transform .25s; pointer-events: none; }
+  #info.show { opacity: 1; transform: none; pointer-events: auto; }
+  #info h3 { margin: 0 0 4px; font-size: 15px; }
+  #info p { margin: 0; color: #aab4d6; }
+  #info a { display: inline-block; margin-top: 8px; color: inherit; font-weight: 600; }
+
+  @media (max-width: 520px) {
+    #info { left: 16px; right: 16px; top: 48px; max-width: none; }
+    .lbl { font-size: 11px; padding: 3px 8px; }
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="labels"></div>
+  <div class="title" id="title"></div>
+  <div id="info"></div>
+  <div id="legend"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ===================== Easy settings — edit these ===================== */
+const CONFIG = {
+  title: 'Your Team Name',
+  divisions: [
+    // Region of the brain each division occupies is noted on the right.
+    { name: 'Division 1', description: 'Short description of this division.', color: 0x4fc3ff, url: '' }, // front
+    { name: 'Division 2', description: 'Short description of this division.', color: 0xb44dff, url: '' }, // top
+    { name: 'Division 3', description: 'Short description of this division.', color: 0xffb347, url: '' }, // sides
+    { name: 'Division 4', description: 'Short description of this division.', color: 0x4dffb0, url: '' }  // back
+  ],
+  neutralColor: 0x3a4670,   // cerebellum & brain stem
+  neuronCount: 2400,
+  linkDistance: 0.2,
+  maxLinksPerNeuron: 3,
+  pulseCount: 160,
+  pulseSpeed: 0.6,
+  background: 0x05070f,
+  autoRotate: 0.12          // radians per second (0 = off)
+};
+/* ===================================================================== */
+
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+if (reduceMotion) { CONFIG.autoRotate = 0; CONFIG.pulseSpeed *= 0.4; }
+const hex = c => '#' + c.toString(16).padStart(6, '0');
+const D = CONFIG.divisions.length;
+
+document.getElementById('title').textContent = CONFIG.title;
+
+const wrap = document.getElementById('wrap');
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(CONFIG.background, 1);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+camera.position.set(0, 0.1, 3.6);
+
+const brain = new THREE.Group();
+brain.rotation.set(0.15, -0.8, 0);
+brain.position.y = 0.08;
+scene.add(brain);
+
+function glowTexture() {
+  const s = 64, c = document.createElement('canvas');
+  c.width = c.height = s;
+  const g = c.getContext('2d');
+  const gr = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  gr.addColorStop(0, 'rgba(255,255,255,1)');
+  gr.addColorStop(0.2, 'rgba(255,255,255,0.8)');
+  gr.addColorStop(0.5, 'rgba(255,255,255,0.15)');
+  gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, s, s);
+  return new THREE.CanvasTexture(c);
+}
+const tex = glowTexture();
+
+function randDir() {
+  const u = Math.random() * 2 - 1, t = Math.random() * Math.PI * 2, s = Math.sqrt(1 - u * u);
+  return [s * Math.cos(t), u, s * Math.sin(t)];
+}
+
+/* ---- Brain-shaped point generation ---- */
+function cerebrumPoint() {
+  const h = Math.random() < 0.5 ? -1 : 1;
+  let [dx, dy, dz] = randDir();
+  if (dy < -0.35) dy = -0.35 + (dy + 0.35) * 0.5;
+  const folds = 1 + 0.07 * Math.sin(11 * dy + 7 * dz + h) * Math.sin(9 * dx + 5 * dz);
+  const depth = 1 - Math.pow(Math.random(), 3) * 0.35;
+  const r = folds * depth;
+  let x = h * 0.3 + dx * 0.52 * r;
+  if (h * x < 0.035) x = h * (0.035 + Math.random() * 0.02);
+  return [x, 0.12 + dy * 0.62 * r, dz * 0.9 * r];
+}
+function cerebellumPoint() {
+  const [dx, dy, dz] = randDir();
+  const r = (1 + 0.05 * Math.sin(40 * dy)) * (1 - Math.pow(Math.random(), 3) * 0.3);
+  return [dx * 0.48 * r, -0.4 + dy * 0.22 * r, -0.6 + dz * 0.3 * r];
+}
+function stemPoint() {
+  const t = Math.random(), a = Math.random() * Math.PI * 2;
+  const rad = (0.12 - t * 0.04) * (0.8 + Math.random() * 0.2);
+  return [Math.cos(a) * rad, -0.25 - t * 0.7, -0.28 - t * 0.12 + Math.sin(a) * rad];
+}
+
+/* Which division (lobe) a cerebrum point belongs to: 0 front, 1 top, 2 sides, 3 back */
+function lobeOf(x, y, z) {
+  const wobble = 0.04 * Math.sin(y * 14 + x * 6);
+  if (z > 0.25 - 0.25 * y + wobble) return 0;            // frontal
+  if (z < -0.5 + 0.1 * y + wobble) return 3;             // occipital
+  if (y < 0.02 + wobble && Math.abs(x) > 0.27) return 2; // temporal
+  return 1;                                              // parietal
+}
+
+const N = CONFIG.neuronCount;
+const pos = new Float32Array(N * 3);
+const div = new Int8Array(N);          // -1 = neutral
+const glow = new Float32Array(N);
+const col = new Float32Array(N * 3);
+
+const divColors = CONFIG.divisions.map(d => new THREE.Color(d.color));
+const neutral = new THREE.Color(CONFIG.neutralColor);
+const colorOf = d => (d < 0 ? neutral : divColors[d]);
+
+for (let i = 0; i < N; i++) {
+  const r = Math.random();
+  let p, d = -1;
+  if (r < 0.86) { p = cerebrumPoint(); d = lobeOf(p[0], p[1], p[2]) % D; }
+  else if (r < 0.95) p = cerebellumPoint();
+  else p = stemPoint();
+  pos.set(p, i * 3);
+  div[i] = d;
+}
+
+/* ---- Connections ---- */
+const adj = Array.from({ length: N }, () => []);
+const links = [];
+const seen = new Set();
+const d2max = CONFIG.linkDistance ** 2;
+for (let i = 0; i < N; i++) {
+  const cand = [];
+  const xi = pos[i * 3], yi = pos[i * 3 + 1], zi = pos[i * 3 + 2];
+  for (let j = 0; j < N; j++) {
+    if (j === i) continue;
+    const dx = pos[j * 3] - xi, dy = pos[j * 3 + 1] - yi, dz = pos[j * 3 + 2] - zi;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 < d2max) cand.push([d2, j]);
+  }
+  cand.sort((a, b) => a[0] - b[0]);
+  for (let c = 0; c < cand.length && adj[i].length < CONFIG.maxLinksPerNeuron; c++) {
+    const j = cand[c][1];
+    const key = i < j ? i * N + j : j * N + i;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    links.push([i, j, Math.sqrt(cand[c][0])]);
+    adj[i].push(j); adj[j].push(i);
+  }
+}
+
+const L = links.length;
+const linePos = new Float32Array(L * 6);
+const lineCol = new Float32Array(L * 6);
+links.forEach(([a, b], n) => {
+  linePos.set([pos[a * 3], pos[a * 3 + 1], pos[a * 3 + 2], pos[b * 3], pos[b * 3 + 1], pos[b * 3 + 2]], n * 6);
+});
+const lineGeo = new THREE.BufferGeometry();
+lineGeo.setAttribute('position', new THREE.BufferAttribute(linePos, 3));
+const lineColAttr = new THREE.BufferAttribute(lineCol, 3);
+lineGeo.setAttribute('color', lineColAttr);
+brain.add(new THREE.LineSegments(lineGeo, new THREE.LineBasicMaterial({
+  vertexColors: true, transparent: true, opacity: 0.4,
+  blending: THREE.AdditiveBlending, depthWrite: false
+})));
+
+/* ---- Neurons ---- */
+const nodeGeo = new THREE.BufferGeometry();
+nodeGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+const colAttr = new THREE.BufferAttribute(col, 3);
+nodeGeo.setAttribute('color', colAttr);
+const nodes = new THREE.Points(nodeGeo, new THREE.PointsMaterial({
+  size: 0.04, map: tex, vertexColors: true, transparent: true,
+  blending: THREE.AdditiveBlending, depthWrite: false
+}));
+brain.add(nodes);
+
+/* ---- Signals ---- */
+const P = CONFIG.pulseCount;
+const pulsePos = new Float32Array(P * 3);
+const pulseCol = new Float32Array(P * 3);
+const pulses = [];
+function newPulse() {
+  const l = links[Math.floor(Math.random() * L)];
+  return Math.random() < 0.5 ? { a: l[0], b: l[1], t: Math.random(), len: l[2] }
+                             : { a: l[1], b: l[0], t: Math.random(), len: l[2] };
+}
+for (let i = 0; i < P; i++) pulses.push(newPulse());
+const pulseGeo = new THREE.BufferGeometry();
+const pulseAttr = new THREE.BufferAttribute(pulsePos, 3);
+const pulseColAttr = new THREE.BufferAttribute(pulseCol, 3);
+pulseGeo.setAttribute('position', pulseAttr);
+pulseGeo.setAttribute('color', pulseColAttr);
+brain.add(new THREE.Points(pulseGeo, new THREE.PointsMaterial({
+  size: 0.085, map: tex, vertexColors: true, transparent: true,
+  blending: THREE.AdditiveBlending, depthWrite: false
+})));
+
+function dist(a, b) {
+  const dx = pos[a * 3] - pos[b * 3], dy = pos[a * 3 + 1] - pos[b * 3 + 1], dz = pos[a * 3 + 2] - pos[b * 3 + 2];
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+/* ---- Label anchors: centre of each division, pushed outward ---- */
+const anchors = CONFIG.divisions.map((_, d) => {
+  const c = new THREE.Vector3(); let n = 0;
+  for (let i = 0; i < N; i++) {
+    if (div[i] !== d) continue;
+    if (d === 2 && pos[i * 3] < 0) continue; // side division: label on one side
+    c.x += pos[i * 3]; c.y += pos[i * 3 + 1]; c.z += pos[i * 3 + 2]; n++;
+  }
+  return n ? c.divideScalar(n).multiplyScalar(1.3) : c;
+});
+
+/* ---- UI: labels, legend, info panel ---- */
+const labelsEl = document.getElementById('labels');
+const legendEl = document.getElementById('legend');
+const infoEl = document.getElementById('info');
+const labelEls = [], chipEls = [];
+let active = -1;
+
+CONFIG.divisions.forEach((d, i) => {
+  const lbl = document.createElement('div');
+  lbl.className = 'lbl';
+  lbl.style.color = hex(d.color);
+  lbl.textContent = d.name;
+  lbl.addEventListener('click', () => setActive(active === i ? -1 : i));
+  labelsEl.appendChild(lbl); labelEls.push(lbl);
+
+  const chip = document.createElement('button');
+  chip.className = 'chip';
+  chip.style.color = hex(d.color);
+  const dot = document.createElement('span');
+  dot.className = 'dot'; dot.style.background = hex(d.color);
+  const txt = document.createElement('span');
+  txt.style.color = '#dfe6ff'; txt.textContent = d.name;
+  chip.append(dot, txt);
+  chip.addEventListener('click', () => setActive(active === i ? -1 : i));
+  legendEl.appendChild(chip); chipEls.push(chip);
+});
+
+function setActive(i) {
+  active = i;
+  chipEls.forEach((c, k) => c.classList.toggle('on', k === i));
+  labelEls.forEach((l, k) => l.classList.toggle('on', k === i));
+  infoEl.replaceChildren();
+  if (i < 0) { infoEl.classList.remove('show'); return; }
+  const d = CONFIG.divisions[i];
+  const h = document.createElement('h3');
+  h.textContent = d.name; h.style.color = hex(d.color);
+  const p = document.createElement('p');
+  p.textContent = d.description;
+  infoEl.append(h, p);
+  if (d.url) {
+    const a = document.createElement('a');
+    a.href = d.url; a.target = '_top'; a.textContent = 'Open page →';
+    a.style.color = hex(d.color);
+    infoEl.appendChild(a);
+  }
+  infoEl.classList.add('show');
+}
+
+/* ---- Interaction: drag to rotate, tap a region to select ---- */
+let dragging = false, lastX = 0, lastY = 0, downX = 0, downY = 0;
+let velY = CONFIG.autoRotate, velX = 0;
+const raycaster = new THREE.Raycaster();
+raycaster.params.Points.threshold = 0.05;
+const ndc = new THREE.Vector2();
+
+canvas.addEventListener('pointerdown', e => {
+  dragging = true; lastX = downX = e.clientX; lastY = downY = e.clientY;
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  const dx = e.clientX - lastX, dy = e.clientY - lastY;
+  lastX = e.clientX; lastY = e.clientY;
+  brain.rotation.y += dx * 0.006;
+  brain.rotation.x = THREE.MathUtils.clamp(brain.rotation.x + dy * 0.006, -1, 1);
+  velY = dx * 0.35; velX = dy * 0.35;
+});
+canvas.addEventListener('pointerup', e => {
+  dragging = false;
+  if (Math.hypot(e.clientX - downX, e.clientY - downY) > 6) return; // it was a drag
+  velY = CONFIG.autoRotate; velX = 0;
+  const r = canvas.getBoundingClientRect();
+  ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  raycaster.setFromCamera(ndc, camera);
+  const hit = raycaster.intersectObject(nodes)[0];
+  const d = hit ? div[hit.index] : -1;
+  setActive(d >= 0 && d !== active ? d : -1);
+});
+canvas.addEventListener('pointercancel', () => { dragging = false; });
+
+/* ---- Resize ---- */
+function resize() {
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (!w || !h) return;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.position.z = w / h < 1 ? 3.6 / (w / h) * 0.75 + 0.9 : 3.6;
+  camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(canvas);
+resize();
+
+/* ---- Animation ---- */
+const fac = new Float32Array(D + 1).fill(1); // brightness per division (index 0 = neutral)
+const white = new THREE.Color(1, 1, 1), tmp = new THREE.Color();
+const wp = new THREE.Vector3(), nrm = new THREE.Vector3(), toCam = new THREE.Vector3(), centre = new THREE.Vector3();
+const clock = new THREE.Clock();
+
+function animate() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const time = clock.elapsedTime;
+
+  // ease highlight levels
+  for (let k = 0; k <= D; k++) {
+    const target = active < 0 ? 1 : (k === active + 1 ? 1.3 : k === 0 ? 0.25 : 0.15);
+    fac[k] += (target - fac[k]) * Math.min(dt * 5, 1);
+  }
+
+  // signals
+  for (let i = 0; i < P; i++) {
+    const p = pulses[i];
+    p.t += (CONFIG.pulseSpeed / p.len) * dt * 0.25;
+    if (p.t >= 1) {
+      glow[p.b] = 1;
+      const nb = adj[p.b];
+      if (nb.length) {
+        let next = nb[Math.floor(Math.random() * nb.length)];
+        if (next === p.a && nb.length > 1) next = nb[Math.floor(Math.random() * nb.length)];
+        p.a = p.b; p.b = next; p.len = dist(p.a, p.b) || 0.05; p.t = 0;
+      } else pulses[i] = newPulse();
+    }
+    const a = p.a * 3, b = p.b * 3, t = p.t;
+    pulsePos[i * 3] = pos[a] + (pos[b] - pos[a]) * t;
+    pulsePos[i * 3 + 1] = pos[a + 1] + (pos[b + 1] - pos[a + 1]) * t;
+    pulsePos[i * 3 + 2] = pos[a + 2] + (pos[b + 2] - pos[a + 2]) * t;
+    const db = div[p.b];
+    tmp.copy(colorOf(db)).lerp(white, 0.55).multiplyScalar(fac[db + 1]);
+    pulseCol[i * 3] = tmp.r; pulseCol[i * 3 + 1] = tmp.g; pulseCol[i * 3 + 2] = tmp.b;
+  }
+  pulseAttr.needsUpdate = true;
+  pulseColAttr.needsUpdate = true;
+
+  // neurons
+  const decay = Math.exp(-dt * 2.5);
+  for (let i = 0; i < N; i++) {
+    if (Math.random() < 0.0004) glow[i] = Math.max(glow[i], 0.6);
+    glow[i] *= decay;
+    const c = colorOf(div[i]);
+    const s = (0.45 + glow[i] * 1.8) * fac[div[i] + 1];
+    col[i * 3] = c.r * s; col[i * 3 + 1] = c.g * s; col[i * 3 + 2] = c.b * s;
+  }
+  colAttr.needsUpdate = true;
+
+  // connections
+  for (let n = 0; n < L; n++) {
+    const a = links[n][0], b = links[n][1];
+    const ca = colorOf(div[a]), cb = colorOf(div[b]);
+    const sa = 0.5 * fac[div[a] + 1], sb = 0.5 * fac[div[b] + 1];
+    const o = n * 6;
+    lineCol[o] = ca.r * sa; lineCol[o + 1] = ca.g * sa; lineCol[o + 2] = ca.b * sa;
+    lineCol[o + 3] = cb.r * sb; lineCol[o + 4] = cb.g * sb; lineCol[o + 5] = cb.b * sb;
+  }
+  lineColAttr.needsUpdate = true;
+
+  // rotation
+  if (!dragging) {
+    brain.rotation.y += velY * dt;
+    brain.rotation.x = THREE.MathUtils.clamp(brain.rotation.x + velX * dt, -1, 1);
+    velY += (CONFIG.autoRotate - velY) * Math.min(dt * 1.5, 1);
+    velX *= Math.exp(-dt * 3);
+  }
+  brain.scale.setScalar(reduceMotion ? 1 : 1 + 0.012 * Math.sin(time * 1.2));
+  brain.updateMatrixWorld();
+
+  // labels follow their region; fade when on the far side
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  centre.setFromMatrixPosition(brain.matrixWorld);
+  anchors.forEach((anc, i) => {
+    wp.copy(anc).applyMatrix4(brain.matrixWorld);
+    nrm.copy(wp).sub(centre).normalize();
+    toCam.copy(camera.position).sub(wp).normalize();
+    const facing = nrm.dot(toCam);
+    let op = THREE.MathUtils.clamp(0.3 + facing * 0.9, 0.12, 1);
+    if (active >= 0 && i !== active) op *= 0.35;
+    if (i === active) op = 1;
+    wp.project(camera);
+    const el = labelEls[i];
+    el.style.left = ((wp.x + 1) / 2 * w) + 'px';
+    el.style.top = ((1 - wp.y) / 2 * h) + 'px';
+    el.style.opacity = op.toFixed(2);
+    el.style.zIndex = facing > 0 ? 2 : 1;
+  });
+
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+animate();
+</script>
+</body>
+</html>
